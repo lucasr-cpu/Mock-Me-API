@@ -1,29 +1,61 @@
-from fastapi import FastAPI, Request
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
+from fastapi import FastAPI, Request, Depends
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
 from faker import Faker
+import random
 
-# 1. Setup the Limiter (identifies users by their IP address)
-limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="Open Mock-Me API")
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# --- DATABASE SETUP ---
+SQLALCHEMY_DATABASE_URL = "sqlite:///./mockme.db"
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
+class UserDB(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)
+    email = Column(String, unique=True)
+    avatar_url = Column(String)
+
+Base.metadata.create_all(bind=engine)
 fake = Faker()
 
-@app.get("/")
-def home():
-    return {"message": "API is Public and Rate-Limited"}
+app = FastAPI(title="Advanced Mock-Me Pro")
 
-# 2. Public Endpoint: No keys required, but limited to 10 hits per minute
+# Dependency to get DB session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# --- ENDPOINTS ---
+
 @app.get("/v1/generate/user")
-@limiter.limit("10/minute")
-def get_user(request: Request):
-    """Generates a random user for anyone who asks."""
-    return {
-        "id": fake.uuid4(),
-        "name": fake.name(),
-        "email": fake.email(),
-        "username": fake.user_name()
-    }
+def create_mock_user(db: Session = Depends(get_db)):
+    """Generates a user, saves them to SQLite, and adds a free avatar image."""
+    
+    # 1. Choose a random free image service
+    seed = random.randint(1, 1000)
+    avatar = f"https://api.dicebear.com/7.x/avataaars/svg?seed={seed}"
+    
+    # 2. Create the user object
+    new_user = UserDB(
+        name=fake.name(),
+        email=fake.email(),
+        avatar_url=avatar
+    )
+    
+    # 3. Save to SQLite
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    return new_user
+
+@app.get("/v1/users/all")
+def get_all_saved_users(db: Session = Depends(get_db)):
+    """View everyone currently stored in your database."""
+    return db.query(UserDB).all()

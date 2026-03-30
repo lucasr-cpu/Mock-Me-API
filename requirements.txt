@@ -2,4 +2,4 @@ fastapi
 uvicorn
 faker
 slowapi
-python-dotenv
+sqlalchemy
