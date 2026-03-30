@@ -1,61 +1,83 @@
-from fastapi import FastAPI, Request, Depends
-from sqlalchemy import create_engine, Column, Integer, String
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
-from faker import Faker
 import random
+from fastapi import FastAPI, Depends, Request
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Float
+from sqlalchemy.orm import relationship, sessionmaker, Session, declarative_base
+from faker import Faker
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
-# --- DATABASE SETUP ---
-SQLALCHEMY_DATABASE_URL = "sqlite:///./mockme.db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# --- DB & APP SETUP ---
 Base = declarative_base()
+engine = create_engine("sqlite:///./mockme_pro.db", connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine)
+fake = Faker()
+app = FastAPI(title="MockMe Pro: The Ecosystem API")
+limiter = Limiter(key_func=get_remote_address)
 
-class UserDB(Base):
+# --- MODELS (The "Smart" Structure) ---
+class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     name = Column(String)
-    email = Column(String, unique=True)
-    avatar_url = Column(String)
+    job = Column(String)
+    avatar = Column(String)
+    company_id = Column(Integer, ForeignKey("companies.id"))
+    company = relationship("Company", back_populates="employees")
+
+class Company(Base):
+    __tablename__ = "companies"
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    catchphrase = Column(String)
+    employees = relationship("User", back_populates="company")
+    products = relationship("Product", back_populates="manufacturer")
+
+class Product(Base):
+    __tablename__ = "products"
+    id = Column(Integer, primary_key=True)
+    title = Column(String)
+    price = Column(Float)
+    company_id = Column(Integer, ForeignKey("companies.id"))
+    manufacturer = relationship("Company", back_populates="products")
 
 Base.metadata.create_all(bind=engine)
-fake = Faker()
 
-app = FastAPI(title="Advanced Mock-Me Pro")
-
-# Dependency to get DB session
 def get_db():
     db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    try: yield db
+    finally: db.close()
 
-# --- ENDPOINTS ---
+# --- SMART ENDPOINTS ---
 
-@app.get("/v1/generate/user")
-def create_mock_user(db: Session = Depends(get_db)):
-    """Generates a user, saves them to SQLite, and adds a free avatar image."""
+@app.post("/v1/generate/ecosystem")
+@limiter.limit("5/minute")
+def generate_full_world(request: Request, db: Session = Depends(get_db)):
+    """Creates a linked Company, User, and 3 Products in one shot."""
     
-    # 1. Choose a random free image service
-    seed = random.randint(1, 1000)
-    avatar = f"https://api.dicebear.com/7.x/avataaars/svg?seed={seed}"
-    
-    # 2. Create the user object
-    new_user = UserDB(
-        name=fake.name(),
-        email=fake.email(),
-        avatar_url=avatar
-    )
-    
-    # 3. Save to SQLite
+    # 1. Create Company
+    new_company = Company(name=fake.company(), catchphrase=fake.bs().title())
+    db.add(new_company)
+    db.flush() # Gets the ID without committing yet
+
+    # 2. Create User (CEO) linked to Company
+    avatar = f"https://api.dicebear.com/7.x/bottts/svg?seed={fake.word()}"
+    new_user = User(name=fake.name(), job=fake.job(), avatar=avatar, company_id=new_company.id)
     db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    return new_user
 
-@app.get("/v1/users/all")
-def get_all_saved_users(db: Session = Depends(get_db)):
-    """View everyone currently stored in your database."""
-    return db.query(UserDB).all()
+    # 3. Create 3 Smart Products
+    for _ in range(3):
+        p_name = f"{new_company.name} {fake.word().capitalize()} {random.choice(['Pro', 'Max', 'Ultra'])}"
+        new_product = Product(title=p_name, price=round(random.uniform(10, 999), 2), company_id=new_company.id)
+        db.add(new_product)
+
+    db.commit()
+    return {"status": "Ecosystem Created", "company": new_company.name, "ceo": new_user.name}
+
+@app.get("/v1/universe")
+def get_everything(db: Session = Depends(get_db)):
+    """The 'God View' - returns all linked data."""
+    return {
+        "users": db.query(User).all(),
+        "companies": db.query(Company).all(),
+        "products": db.query(Product).all()
+    }
